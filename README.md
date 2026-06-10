@@ -2,13 +2,15 @@
 
 # 🍯 Honeypot Suite
 
-**A single, modular Go binary that runs twelve protocol honeypots side by side.**
+**A single, modular Go binary that runs thirteen protocol honeypots side by side.**
 
 Toggle each protocol from `.env`, capture every probe and credential as
-structured JSON, and add new protocols as self-contained packages.
+structured JSON, and add new protocols as self-contained packages. Every pot
+impersonates one shared Windows / Active Directory persona and answers with
+randomized, human-plausible timing.
 
 ![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)
-![Honeypots](https://img.shields.io/badge/honeypots-12-orange)
+![Honeypots](https://img.shields.io/badge/honeypots-13-orange)
 ![Tests](https://img.shields.io/badge/tests-unit%20%2B%20integration%20%2B%20race-success)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
@@ -30,8 +32,14 @@ telemetry on networks you own or are authorized to monitor.
 
 ## ✨ Features
 
-- **12 protocols, one binary** — DNS, RDP, SMB, LDAP, NetBIOS, FTP, Telnet,
-  SNMP, MySQL, MSSQL, Redis, HTTP.
+- **13 protocols, one binary** — DNS, Kerberos, RDP, SMB, LDAP, NetBIOS, FTP,
+  Telnet, SNMP, MySQL, MSSQL, Redis, HTTP.
+- **One shared persona** — a single set of identity vars (hostname, domain, OS)
+  keeps every pot telling the same Windows Server 2019 / Active Directory story:
+  IIS, Microsoft FTP/Telnet, AD LDAP, `CONTOSO\WIN-DC01`, SQL Server 2019, …
+- **Randomized timing** — each pot waits a random per-protocol delay before its
+  first byte, with slower built-in pauses for failed logins (300–800 ms) and
+  unknown users (500–1500 ms), so constant-latency fingerprinting fails.
 - **`.env`-driven** — enable/disable each pot and set its bind address without
   touching code. Real environment variables always override the file.
 - **Structured intelligence** — every event is one JSON line (JSONL), ready to
@@ -50,6 +58,7 @@ telemetry on networks you own or are authorized to monitor.
 | Pot | Port | Protocol | Captures | Plaintext? |
 |-----|------|----------|----------|:---------:|
 | `dns` | 53 (UDP+TCP) | DNS | Queried name, record type, source | — |
+| `kerberos` | 88 (UDP+TCP) | Kerberos | AS-REQ/TGS-REQ principal + realm (spray/roast intel) | — |
 | `rdp` | 3389 | RDP / NLA | NTLM username + domain (via CredSSP/TLS) | ✗ (NTLM) |
 | `smb` | 445 | SMBv1/v2 | Session-setup username + domain | ✗ (NTLM) |
 | `ldap` | 389 | LDAP | Bind DN + password (simple auth) | ✅ |
@@ -66,6 +75,45 @@ telemetry on networks you own or are authorized to monitor.
 > password. RDP/SMB use NTLM and MySQL uses a salted scramble — those yield
 > hashes suitable for offline cracking, logged alongside their salt where
 > applicable.
+
+## 🎭 Persona & deception
+
+All pots share one identity, set once at the top of `.env`:
+
+| Variable | Default | Used by |
+|----------|---------|---------|
+| `HONEYPOT_HOSTNAME` | `WIN-DC01` | NetBIOS, SNMP sysName, RDP cert, Kerberos |
+| `HONEYPOT_NETBIOS_DOMAIN` | `CONTOSO` | NetBIOS, SMB |
+| `HONEYPOT_AD_DOMAIN` | `contoso.local` | RDP cert, Kerberos realm, FQDNs |
+| `HONEYPOT_OS` | `Windows Server 2019 Datacenter` | SMB, SNMP sysDescr |
+| `HONEYPOT_OS_VERSION` | `10.0.17763.1` | DNS version.bind, SNMP |
+
+The result is a consistent Windows DC: **Microsoft-IIS/10.0 + ASP.NET** on HTTP,
+**Microsoft FTP Service**, **Microsoft Telnet Service**, **SQL Server 2019
+(15.0.4415)**, **MySQL 5.7.44**, **Redis 7.2.4**, AD LDAP, `CONTOSO\WIN-DC01`
+over NetBIOS, and a `CONTOSO.LOCAL` Kerberos KDC.
+
+**Timing.** Each pot sleeps a random window before its first response (DNS
+1–15 ms, RDP 30–150 ms, HTTP 20–300 ms, …) — override any with
+`HONEYPOT_<POT>_DELAY_MIN_MS` / `_MAX_MS`. Credential rejections add a longer,
+randomized pause (failed login 300–800 ms, unknown user 500–1500 ms) so latency
+analysis can't separate the decoy from a real service.
+
+## 🌐 Realistic DNS without an amplifier
+
+With `HONEYPOT_DNS_FORWARD=true` the DNS pot resolves queries through an upstream
+resolver (`HONEYPOT_DNS_UPSTREAM`, default `1.1.1.1:53`) so answers are real.
+It behaves recursively **without ever becoming a reflection/amplification tool**:
+
+- **Per-IP rate limiting (RRL)** — a spoofed flood from one source is dropped, so
+  there is no high-rate reply stream to reflect.
+- **UDP truncation** — any reply over 512 bytes is returned with `TC=1`, forcing
+  a TCP retry; a UDP answer is never meaningfully larger than the query.
+- **`ANY` refused** — the classic amplification query type gets `REFUSED`, no records.
+- **Upstream over TCP** — the pot never re-emits spoofable UDP toward the resolver.
+- **Bounded cache** — repeated queries are served locally, shielding the upstream.
+
+Leave `HONEYPOT_DNS_FORWARD=false` to return synthesized (fake) records instead.
 
 ## 🏗️ Architecture
 
@@ -132,43 +180,38 @@ All pots default to **disabled**, so the suite only opens what you ask for.
 <details open>
 <summary><b>Per-pot settings</b></summary>
 
+Per pot, `HONEYPOT_<POT>_ENABLED` (default `false`), `_LISTEN`, and the optional
+`_DELAY_MIN_MS` / `_DELAY_MAX_MS` are always available. The protocol-specific
+settings:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HONEYPOT_DNS_ENABLED` | `false` | Enable the DNS pot |
-| `HONEYPOT_DNS_LISTEN` | `0.0.0.0:53` | DNS bind address |
-| `HONEYPOT_DNS_ANSWER_IPV4` | `192.168.1.1` | Fake A record |
+| `HONEYPOT_DNS_ANSWER_IPV4` | `192.168.1.1` | Fake A record (when not forwarding) |
 | `HONEYPOT_DNS_ANSWER_IPV6` | `2001:db8::1` | Fake AAAA record |
-| `HONEYPOT_DNS_DOMAIN` | _(empty)_ | Base zone for MX/NS/SOA/SRV/CNAME/PTR hostnames (e.g. `mail.<domain>`). Empty = mirror the queried domain |
-| `HONEYPOT_RDP_ENABLED` | `false` | Enable the RDP pot |
-| `HONEYPOT_RDP_LISTEN` | `0.0.0.0:3389` | RDP bind address |
-| `HONEYPOT_RDP_CERT_ORG` | `sifirgun.tr` | Org name in the self-signed cert |
-| `HONEYPOT_SMB_ENABLED` | `false` | Enable the SMB pot |
-| `HONEYPOT_SMB_LISTEN` | `0.0.0.0:445` | SMB bind address |
-| `HONEYPOT_LDAP_ENABLED` | `false` | Enable the LDAP pot |
-| `HONEYPOT_LDAP_LISTEN` | `0.0.0.0:389` | LDAP bind address |
+| `HONEYPOT_DNS_DOMAIN` | _(empty)_ | Base zone for synthesized MX/NS/SOA/… (empty = mirror the queried domain) |
+| `HONEYPOT_DNS_FORWARD` | `false` | Resolve through an upstream resolver for real answers (safeguards always on) |
+| `HONEYPOT_DNS_UPSTREAM` | `1.1.1.1:53` | Upstream recursive resolver (queried over TCP) |
+| `HONEYPOT_DNS_VERSION` | `Microsoft DNS <os_version>` | CHAOS `version.bind` reply |
+| `HONEYPOT_KERBEROS_*` | `0.0.0.0:88` | Kerberos KDC pot (TCP+UDP) |
+| `HONEYPOT_KERBEROS_REALM` | `CONTOSO.LOCAL` | Realm (defaults to upper-cased AD domain) |
+| `HONEYPOT_RDP_CERT_ORG` | `contoso.local` | Org name in the self-signed cert |
+| `HONEYPOT_RDP_CERT_CN` | _host FQDN_ | Certificate CN (e.g. `win-dc01.contoso.local`) |
+| `HONEYPOT_SMB_OS` | `Windows Server 2019 Datacenter` | Advertised native OS |
+| `HONEYPOT_SMB_DOMAIN` | `CONTOSO` | Advertised NetBIOS domain |
 | `HONEYPOT_LDAP_BIND_RESULT` | `invalid` | Bind reply: `invalid` (49) or `success` (0) |
-| `HONEYPOT_NETBIOS_ENABLED` | `false` | Enable the NetBIOS pot |
-| `HONEYPOT_NETBIOS_LISTEN` | `0.0.0.0:137` | NetBIOS (UDP) bind address |
 | `HONEYPOT_NETBIOS_ANSWER_IPV4` | `192.168.1.1` | Fake IP in name-query answers |
-| `HONEYPOT_FTP_ENABLED` | `false` | Enable the FTP pot |
-| `HONEYPOT_FTP_LISTEN` | `0.0.0.0:21` | FTP bind address |
-| `HONEYPOT_FTP_BANNER` | `220 (vsFTPd 3.0.3)` | FTP greeting banner |
-| `HONEYPOT_TELNET_ENABLED` | `false` | Enable the Telnet pot |
-| `HONEYPOT_TELNET_LISTEN` | `0.0.0.0:23` | Telnet bind address |
-| `HONEYPOT_TELNET_BANNER` | _(empty)_ | Optional pre-login banner |
-| `HONEYPOT_SNMP_ENABLED` | `false` | Enable the SNMP pot |
-| `HONEYPOT_SNMP_LISTEN` | `0.0.0.0:161` | SNMP (UDP) bind address |
-| `HONEYPOT_MYSQL_ENABLED` | `false` | Enable the MySQL pot |
-| `HONEYPOT_MYSQL_LISTEN` | `0.0.0.0:3306` | MySQL bind address |
-| `HONEYPOT_MYSQL_VERSION` | `5.7.40` | Version advertised in the greeting |
-| `HONEYPOT_MSSQL_ENABLED` | `false` | Enable the MSSQL pot |
-| `HONEYPOT_MSSQL_LISTEN` | `0.0.0.0:1433` | MSSQL bind address |
-| `HONEYPOT_REDIS_ENABLED` | `false` | Enable the Redis pot |
-| `HONEYPOT_REDIS_LISTEN` | `0.0.0.0:6379` | Redis bind address |
+| `HONEYPOT_NETBIOS_HOSTNAME` | `WIN-DC01` | Computer name in NBSTAT replies |
+| `HONEYPOT_NETBIOS_DOMAIN` | `CONTOSO` | Workgroup/domain in NBSTAT replies |
+| `HONEYPOT_FTP_BANNER` | `220 Microsoft FTP Service` | FTP greeting banner |
+| `HONEYPOT_TELNET_BANNER` | `Microsoft Telnet Service…` | Pre-login banner |
+| `HONEYPOT_SNMP_SYSDESCR` | _Windows Server string_ | sysDescr.0 value |
+| `HONEYPOT_SNMP_SYSNAME` | `WIN-DC01` | sysName.0 value |
+| `HONEYPOT_MYSQL_VERSION` | `5.7.44` | Version advertised in the greeting |
+| `HONEYPOT_MSSQL_VERSION` | `15.0.4415` | SQL Server version in the pre-login |
 | `HONEYPOT_REDIS_REQUIRE_AUTH` | `true` | Reply `NOAUTH` until an AUTH is seen |
-| `HONEYPOT_HTTP_ENABLED` | `false` | Enable the HTTP pot |
-| `HONEYPOT_HTTP_LISTEN` | `0.0.0.0:80` | HTTP bind address |
-| `HONEYPOT_HTTP_SERVER` | `nginx` | `Server:` response header |
+| `HONEYPOT_REDIS_VERSION` | `7.2.4` | `redis_version` in the INFO reply |
+| `HONEYPOT_HTTP_SERVER` | `Microsoft-IIS/10.0` | `Server:` response header |
+| `HONEYPOT_HTTP_POWERED_BY` | `ASP.NET` | `X-Powered-By:` header (empty omits it) |
 | `HONEYPOT_HTTP_REALM` | `Restricted` | Basic-auth realm in 401 responses |
 
 </details>
@@ -237,12 +280,13 @@ cmd/honeypot/          entrypoint: load config, wire pots, run, shut down
 internal/config/       .env loader + typed configuration
 internal/logging/      unified event + operational logger
 internal/honeypot/     Honeypot interface + Manager (supervision/shutdown)
-internal/ber/          shared ASN.1/BER helpers (used by ldap, snmp)
+internal/ber/          shared ASN.1/BER helpers (used by ldap, snmp, kerberos)
+internal/timing/       randomized response-delay windows
 internal/testutil/     test helpers (free port, wait-for-listener)
 internal/pots/
-    dns/  rdp/  smb/  ldap/        one self-contained package per protocol
-    netbios/  ftp/  telnet/  snmp/
-    mysql/  mssql/  redis/  http/
+    dns/  kerberos/  rdp/  smb/     one self-contained package per protocol
+    ldap/  netbios/  ftp/  telnet/
+    snmp/  mysql/  mssql/  redis/  http/
 ```
 
 ## ➕ Adding a new honeypot
