@@ -138,6 +138,7 @@ All pots default to **disabled**, so the suite only opens what you ask for.
 | `HONEYPOT_DNS_LISTEN` | `0.0.0.0:53` | DNS bind address |
 | `HONEYPOT_DNS_ANSWER_IPV4` | `192.168.1.1` | Fake A record |
 | `HONEYPOT_DNS_ANSWER_IPV6` | `2001:db8::1` | Fake AAAA record |
+| `HONEYPOT_DNS_DOMAIN` | _(empty)_ | Base zone for MX/NS/SOA/SRV/CNAME/PTR hostnames (e.g. `mail.<domain>`). Empty = mirror the queried domain |
 | `HONEYPOT_RDP_ENABLED` | `false` | Enable the RDP pot |
 | `HONEYPOT_RDP_LISTEN` | `0.0.0.0:3389` | RDP bind address |
 | `HONEYPOT_RDP_CERT_ORG` | `sifirgun.tr` | Org name in the self-signed cert |
@@ -171,6 +172,12 @@ All pots default to **disabled**, so the suite only opens what you ask for.
 | `HONEYPOT_HTTP_REALM` | `Restricted` | Basic-auth realm in 401 responses |
 
 </details>
+
+> **Believable DNS answers.** Synthesized records (MX, NS, SOA, SRV, CNAME, PTR)
+> hang their hostnames off a real-looking zone instead of any honeypot-revealing
+> string. By default that zone mirrors the domain the client queried
+> (`example.com MX` → `mail.example.com`); set `HONEYPOT_DNS_DOMAIN` to pin every
+> answer to a fixed domain instead.
 
 <details>
 <summary><b>Logging settings</b></summary>
