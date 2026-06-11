@@ -238,11 +238,12 @@ settings:
 > **Hide the host's real IP.** TLS/HTTP handshakes and connection errors can echo
 > the server's own address into a logged event (e.g. `read tcp <public-ip>:3389->…`
 > or an HTTP `Host: <public-ip>`), which would then leak through the public log
-> dashboard. The logger **auto-detects every non-loopback interface address and
-> scrubs it from all output** — event files, console, and `honeypot.log` — with no
-> configuration. Add `HONEYPOT_REDACT_IPS` for any extra address the host doesn't
-> own directly (e.g. a NAT/elastic IP), and `HONEYPOT_REDACT_WITH` to change the
-> replacement (the persona FQDN by default).
+> dashboard. The logger **auto-scrubs every non-loopback interface address and
+> every IP the suite binds to** (the latter also appears in scanner probes like
+> `MGLNDD_<ip>_21`) from all output — event files, console, and `honeypot.log` —
+> with no configuration. Add `HONEYPOT_REDACT_IPS` for any extra address the host
+> doesn't own directly (e.g. a NAT/elastic IP), and `HONEYPOT_REDACT_WITH` to
+> change the replacement (the persona FQDN by default).
 
 ## 📊 Logging
 
