@@ -22,7 +22,7 @@ randomized, human-plausible timing.
 ## Overview
 
 Honeypot Suite consolidates the former standalone `DNSpot`, `RDPpot`, and
-`SMBpot` tools — plus nine more services — into one cohesive, growth-ready
+`SMBpot` tools — plus ten more services — into one cohesive, growth-ready
 codebase. Every honeypot implements the same small interface, is supervised by
 a shared manager, and emits events through one structured logger, so the suite
 behaves consistently no matter how many protocols you enable.
@@ -99,21 +99,23 @@ over NetBIOS, and a `CONTOSO.LOCAL` Kerberos KDC.
 randomized pause (failed login 300–800 ms, unknown user 500–1500 ms) so latency
 analysis can't separate the decoy from a real service.
 
-## 🌐 Realistic DNS without an amplifier
+## 🛡️ No amplification, ever
 
-With `HONEYPOT_DNS_FORWARD=true` the DNS pot resolves queries through an upstream
-resolver (`HONEYPOT_DNS_UPSTREAM`, default `1.1.1.1:53`) so answers are real.
-It behaves recursively **without ever becoming a reflection/amplification tool**:
+A honeypot must never become a DDoS reflector. Every UDP pot
+(`internal/ratelimit`) enforces **per-client-IP Response Rate Limiting (RRL)** —
+a spoofed flood from one source is dropped, so there is no high-rate reply stream
+to amplify. On top of that:
 
-- **Per-IP rate limiting (RRL)** — a spoofed flood from one source is dropped, so
-  there is no high-rate reply stream to reflect.
-- **UDP truncation** — any reply over 512 bytes is returned with `TC=1`, forcing
-  a TCP retry; a UDP answer is never meaningfully larger than the query.
-- **`ANY` refused** — the classic amplification query type gets `REFUSED`, no records.
-- **Upstream over TCP** — the pot never re-emits spoofable UDP toward the resolver.
-- **Bounded cache** — repeated queries are served locally, shielding the upstream.
+- **DNS** truncates any UDP reply over 512 bytes (`TC=1`, forcing TCP retry) and
+  **refuses `ANY`** queries — so a UDP answer is never meaningfully larger than the
+  query, the classic amplification lever.
+- **Kerberos** never emits a UDP reply larger than the request.
+- **SNMP / NetBIOS** answer only within the rate limit.
 
-Leave `HONEYPOT_DNS_FORWARD=false` to return synthesized (fake) records instead.
+With `HONEYPOT_DNS_FORWARD=true` the DNS pot also resolves queries through an
+upstream resolver (`HONEYPOT_DNS_UPSTREAM`, default `1.1.1.1:53`) **over TCP** for
+real answers, with a bounded cache shielding the upstream — recursion without a
+reflection surface. Leave it `false` to return synthesized records instead.
 
 ## 🏗️ Architecture
 
@@ -196,8 +198,6 @@ settings:
 | `HONEYPOT_KERBEROS_REALM` | `CONTOSO.LOCAL` | Realm (defaults to upper-cased AD domain) |
 | `HONEYPOT_RDP_CERT_ORG` | `contoso.local` | Org name in the self-signed cert |
 | `HONEYPOT_RDP_CERT_CN` | _host FQDN_ | Certificate CN (e.g. `win-dc01.contoso.local`) |
-| `HONEYPOT_SMB_OS` | `Windows Server 2019 Datacenter` | Advertised native OS |
-| `HONEYPOT_SMB_DOMAIN` | `CONTOSO` | Advertised NetBIOS domain |
 | `HONEYPOT_LDAP_BIND_RESULT` | `invalid` | Bind reply: `invalid` (49) or `success` (0) |
 | `HONEYPOT_NETBIOS_ANSWER_IPV4` | `192.168.1.1` | Fake IP in name-query answers |
 | `HONEYPOT_NETBIOS_HOSTNAME` | `WIN-DC01` | Computer name in NBSTAT replies |
@@ -230,8 +230,19 @@ settings:
 | `HONEYPOT_LOG_DIR` | `./logs` | Log output directory |
 | `HONEYPOT_LOG_CONSOLE` | `true` | Also print events to stdout |
 | `HONEYPOT_LOG_LEVEL` | `info` | `info` or `debug` |
+| `HONEYPOT_REDACT_IPS` | _(empty)_ | Extra addresses to scrub (local interface IPs are auto-detected and always scrubbed) |
+| `HONEYPOT_REDACT_WITH` | _persona FQDN_ | Replacement string for a redacted address |
 
 </details>
+
+> **Hide the host's real IP.** TLS/HTTP handshakes and connection errors can echo
+> the server's own address into a logged event (e.g. `read tcp <public-ip>:3389->…`
+> or an HTTP `Host: <public-ip>`), which would then leak through the public log
+> dashboard. The logger **auto-detects every non-loopback interface address and
+> scrubs it from all output** — event files, console, and `honeypot.log` — with no
+> configuration. Add `HONEYPOT_REDACT_IPS` for any extra address the host doesn't
+> own directly (e.g. a NAT/elastic IP), and `HONEYPOT_REDACT_WITH` to change the
+> replacement (the persona FQDN by default).
 
 ## 📊 Logging
 
@@ -282,6 +293,7 @@ internal/logging/      unified event + operational logger
 internal/honeypot/     Honeypot interface + Manager (supervision/shutdown)
 internal/ber/          shared ASN.1/BER helpers (used by ldap, snmp, kerberos)
 internal/timing/       randomized response-delay windows
+internal/ratelimit/    per-IP token bucket (UDP anti-amplification RRL)
 internal/testutil/     test helpers (free port, wait-for-listener)
 internal/pots/
     dns/  kerberos/  rdp/  smb/     one self-contained package per protocol
