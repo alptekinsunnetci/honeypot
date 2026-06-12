@@ -2,15 +2,15 @@
 
 # 🍯 Honeypot Suite
 
-**A single, modular Go binary that runs thirteen protocol honeypots side by side.**
+**A single, modular Go binary that runs nineteen protocol honeypots side by side.**
 
 Toggle each protocol from `.env`, capture every probe and credential as
 structured JSON, and add new protocols as self-contained packages. Every pot
-impersonates one shared Windows / Active Directory persona and answers with
-randomized, human-plausible timing.
+impersonates one shared Windows / Active Directory persona, answers with
+randomized timing, and can alert you the moment credentials are captured.
 
 ![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)
-![Honeypots](https://img.shields.io/badge/honeypots-13-orange)
+![Honeypots](https://img.shields.io/badge/honeypots-19-orange)
 ![Tests](https://img.shields.io/badge/tests-unit%20%2B%20integration%20%2B%20race-success)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows-lightgrey)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
@@ -22,7 +22,7 @@ randomized, human-plausible timing.
 ## Overview
 
 Honeypot Suite consolidates the former standalone `DNSpot`, `RDPpot`, and
-`SMBpot` tools — plus ten more services — into one cohesive, growth-ready
+`SMBpot` tools — plus sixteen more services — into one cohesive, growth-ready
 codebase. Every honeypot implements the same small interface, is supervised by
 a shared manager, and emits events through one structured logger, so the suite
 behaves consistently no matter how many protocols you enable.
@@ -32,11 +32,22 @@ telemetry on networks you own or are authorized to monitor.
 
 ## ✨ Features
 
-- **13 protocols, one binary** — DNS, Kerberos, RDP, SMB, LDAP, NetBIOS, FTP,
-  Telnet, SNMP, MySQL, MSSQL, Redis, HTTP.
+- **19 protocols, one binary** — SSH, DNS, Kerberos, RDP, SMB, LDAP, NetBIOS,
+  FTP, Telnet, SNMP, MySQL, MSSQL, Redis, HTTP, PostgreSQL, VNC, WinRM,
+  Elasticsearch, MongoDB.
 - **One shared persona** — a single set of identity vars (hostname, domain, OS)
   keeps every pot telling the same Windows Server 2019 / Active Directory story:
-  IIS, Microsoft FTP/Telnet, AD LDAP, `CONTOSO\WIN-DC01`, SQL Server 2019, …
+  IIS, Microsoft FTP/Telnet/SSH, AD LDAP (with rootDSE), `CONTOSO\WIN-DC01`, …
+- **Post-login engagement** — SSH/Telnet drop the attacker into a **safe fake
+  cmd.exe** (nothing is ever executed) and record every command and malware
+  download URL; FTP serves a fake filesystem and **captures uploaded files**;
+  HTTP shows a fake admin panel after a captured login.
+- **Crackable hashes** — RDP and SMB drive a full NTLM challenge/response and log
+  a hashcat-ready **NetNTLMv2** line, not just the username.
+- **Real-time alerting** — high-value captures are pushed to a webhook
+  (Discord/Slack) and/or syslog the instant they happen.
+- **Built-in metrics** — an optional Prometheus `/metrics` endpoint exposes
+  per-pot event/credential counts and unique attacker IPs.
 - **Randomized timing** — each pot waits a random per-protocol delay before its
   first byte, with slower built-in pauses for failed logins (300–800 ms) and
   unknown users (500–1500 ms), so constant-latency fingerprinting fails.
@@ -57,24 +68,29 @@ telemetry on networks you own or are authorized to monitor.
 
 | Pot | Port | Protocol | Captures | Plaintext? |
 |-----|------|----------|----------|:---------:|
+| `ssh` | 22 | SSH | Username + password + **post-login commands** (fake shell) | ✅ |
 | `dns` | 53 (UDP+TCP) | DNS | Queried name, record type, source | — |
 | `kerberos` | 88 (UDP+TCP) | Kerberos | AS-REQ/TGS-REQ principal + realm (spray/roast intel) | — |
-| `rdp` | 3389 | RDP / NLA | NTLM username + domain (via CredSSP/TLS) | ✗ (NTLM) |
-| `smb` | 445 | SMBv1/v2 | Session-setup username + domain | ✗ (NTLM) |
-| `ldap` | 389 | LDAP | Bind DN + password (simple auth) | ✅ |
+| `rdp` | 3389 | RDP / NLA | Username + domain + **NetNTLMv2** (CredSSP/TLS) | ✗ (hash) |
+| `smb` | 445 | SMBv1/v2 | Username + domain + **NetNTLMv2** (session setup) | ✗ (hash) |
+| `ldap` | 389 | LDAP | Bind DN + password; serves AD rootDSE | ✅ |
 | `netbios` | 137 (UDP) | NBNS | NetBIOS name + suffix/role | — |
-| `ftp` | 21 | FTP | `USER` / `PASS` + issued commands | ✅ |
-| `telnet` | 23 | Telnet | Username + password (IAC-aware) | ✅ |
+| `ftp` | 21 | FTP | `USER`/`PASS` + **uploaded files** (fake filesystem) | ✅ |
+| `telnet` | 23 | Telnet | Username + password + **post-login commands** | ✅ |
 | `snmp` | 161 (UDP) | SNMP v1/v2c | Community string + PDU type | ✅ |
 | `mysql` | 3306 | MySQL | Username + auth scramble (+ salt) | ✗ (scramble) |
 | `mssql` | 1433 | TDS | Username + password | ✅ |
 | `redis` | 6379 | RESP | `AUTH` credentials + commands | ✅ |
 | `http` | 80 | HTTP | Request, Basic-auth creds, form bodies | ✅ |
+| `postgres` | 5432 | PostgreSQL | Username + database + cleartext password | ✅ |
+| `vnc` | 5900 | RFB | Auth challenge + response (crackable password) | ✗ (DES) |
+| `winrm` | 5985 | WinRM/HTTP | Basic creds + **NetNTLMv2** (Negotiate/NTLM) | ✗ (hash) |
+| `elasticsearch` | 9200 | HTTP/JSON | Requests, search/exfil queries, Basic creds | ✅ |
+| `mongodb` | 27017 | Mongo wire | Commands + SCRAM username | — |
 
 > **Plaintext?** indicates whether the protocol hands the suite a recoverable
-> password. RDP/SMB use NTLM and MySQL uses a salted scramble — those yield
-> hashes suitable for offline cracking, logged alongside their salt where
-> applicable.
+> password. RDP/SMB drive an NTLM challenge and log a hashcat **NetNTLMv2** line
+> (`-m 5600`); MySQL logs a salted scramble. All are crackable offline.
 
 ## 🎭 Persona & deception
 
@@ -91,7 +107,9 @@ All pots share one identity, set once at the top of `.env`:
 The result is a consistent Windows DC: **Microsoft-IIS/10.0 + ASP.NET** on HTTP,
 **Microsoft FTP Service**, **Microsoft Telnet Service**, **SQL Server 2019
 (15.0.4415)**, **MySQL 5.7.44**, **Redis 7.2.4**, AD LDAP, `CONTOSO\WIN-DC01`
-over NetBIOS, and a `CONTOSO.LOCAL` Kerberos KDC.
+over NetBIOS, and a `CONTOSO.LOCAL` Kerberos KDC that answers username
+enumeration like real AD (`PREAUTH_REQUIRED` for known accounts vs
+`PRINCIPAL_UNKNOWN` for the rest).
 
 **Timing.** Each pot sleeps a random window before its first response (DNS
 1–15 ms, RDP 30–150 ms, HTTP 20–300 ms, …) — override any with
@@ -116,6 +134,63 @@ With `HONEYPOT_DNS_FORWARD=true` the DNS pot also resolves queries through an
 upstream resolver (`HONEYPOT_DNS_UPSTREAM`, default `1.1.1.1:53`) **over TCP** for
 real answers, with a bounded cache shielding the upstream — recursion without a
 reflection surface. Leave it `false` to return synthesized records instead.
+
+## 🔔 Alerting & monitoring
+
+- **Real-time alerts.** Set `HONEYPOT_ALERT_WEBHOOK_URL` (Discord/Slack/generic)
+  and/or `HONEYPOT_ALERT_SYSLOG` to be notified the instant a credential or login
+  is captured — a non-blocking worker pushes a one-line summary plus the redacted
+  event, dropping under overload rather than ever stalling a pot.
+- **Prometheus metrics.** With `HONEYPOT_METRICS_ENABLED=true` a `/metrics`
+  endpoint (bind it to localhost/admin via `HONEYPOT_METRICS_LISTEN`) exposes
+  `honeypot_events_total{pot}`, `honeypot_credentials_total{pot}`,
+  `honeypot_unique_source_ips`, and uptime.
+- **Log rotation.** Each log rotates past `HONEYPOT_LOG_MAX_MB`, keeping
+  `HONEYPOT_LOG_MAX_BACKUPS` files (`events.log.1`, `.2`, …) so disk never fills.
+
+## 🪤 Engagement & post-login capture
+
+Capturing a password is good; capturing what the attacker does *after* is far
+better. Several pots keep the attacker engaged and record their real intent —
+**without ever executing anything** (`internal/shell` is a pure canned-output
+emulator):
+
+- **SSH / Telnet fake shell** (`HONEYPOT_SSH_SHELL`, `HONEYPOT_TELNET_SHELL`).
+  After login the attacker gets a believable Windows `cmd.exe`
+  (`C:\Users\Administrator>`). Every command is logged (`SSH_COMMAND`), and
+  download attempts (`wget`/`curl`/`certutil`/`powershell …DownloadString`) are
+  flagged as `SSH_DOWNLOAD` with the extracted URL — so you capture the malware
+  payload location, not just the credentials.
+- **FTP fake filesystem** (`HONEYPOT_FTP_FS`). Login is accepted and
+  `LIST`/`RETR`/`STOR` work over PASV/EPSV; **uploaded files are captured**
+  (`FTP_UPLOAD` with size) — attackers often upload webshells.
+- **HTTP fake admin panel.** A captured login POST returns a believable
+  dashboard instead of the login form, keeping the attacker clicking.
+
+Accepting any login is a deliberate trade-off that enables command capture; set
+the `*_SHELL` / `*_FS` flags to `false` to fall back to credential-only capture.
+
+## 🧱 Production hardening
+
+Built to survive a hostile internet 24/7 (`internal/netx`):
+
+- **Per-IP connection cap + lifetime.** `HONEYPOT_MAX_CONNS_PER_IP` (default 10)
+  bounds concurrent connections from one source; `HONEYPOT_MAX_CONN_SECONDS`
+  (default 120) is an absolute per-connection deadline that cannot be reset by
+  per-read timeouts — defeating slowloris and connection-flood resource exhaustion.
+- **Panic recovery in every handler.** A malformed packet that trips a parser is
+  logged and the connection dropped — it can never crash the process (and with it
+  the other 13 pots).
+- **Bounded parsing.** BER lengths and SMB/LDAP session buffers are capped, so a
+  declared multi-gigabyte length can't force unbounded buffering.
+- **Windows-like TTL.** Listeners emit packets with IP TTL 128 (Linux default is
+  64), reducing the OS-fingerprint mismatch with the Windows persona.
+- **Spoofable source marking.** UDP-sourced events carry `"spoofable":true` — the
+  source IP is forgeable, so **never feed these into RTBH/BGP-blackhole automation**;
+  use only TCP-handshake-verified sources for blocklisting.
+- **Stable identity & logging.** Persisted SSH host key
+  (`HONEYPOT_SSH_HOST_KEY`), size-based log rotation, an optional merged log
+  (`HONEYPOT_LOG_COMBINED`), and alert/metrics observers that run off the log lock.
 
 ## 🏗️ Architecture
 
@@ -164,8 +239,8 @@ Point at a different config file with `-env`:
 ./honeypot -env /etc/honeypot/prod.env
 ```
 
-> **Privileged ports.** Binding ports below 1024 (21, 23, 53, 80, 137, 161,
-> 389, 445) requires elevated privileges: run as root/Administrator, or on
+> **Privileged ports.** Binding ports below 1024 (22, 21, 23, 53, 80, 88, 137,
+> 161, 389, 445) requires elevated privileges: run as root/Administrator, or on
 > Linux grant the capability once with
 > `sudo setcap cap_net_bind_service=+ep ./honeypot`.
 
@@ -193,9 +268,17 @@ settings:
 | `HONEYPOT_DNS_DOMAIN` | _(empty)_ | Base zone for synthesized MX/NS/SOA/… (empty = mirror the queried domain) |
 | `HONEYPOT_DNS_FORWARD` | `false` | Resolve through an upstream resolver for real answers (safeguards always on) |
 | `HONEYPOT_DNS_UPSTREAM` | `1.1.1.1:53` | Upstream recursive resolver (queried over TCP) |
-| `HONEYPOT_DNS_VERSION` | `Microsoft DNS <os_version>` | CHAOS `version.bind` reply |
+| `HONEYPOT_DNS_VERSION` | _(empty)_ | CHAOS `version.bind`: empty = refuse (Windows-like); set to emulate BIND |
 | `HONEYPOT_KERBEROS_*` | `0.0.0.0:88` | Kerberos KDC pot (TCP+UDP) |
 | `HONEYPOT_KERBEROS_REALM` | `CONTOSO.LOCAL` | Realm (defaults to upper-cased AD domain) |
+| `HONEYPOT_KERBEROS_VALID_USERS` | `administrator,krbtgt,guest` | "Existing" accounts (PREAUTH_REQUIRED vs PRINCIPAL_UNKNOWN) |
+| `HONEYPOT_SSH_*` | `0.0.0.0:22` | SSH pot bind address |
+| `HONEYPOT_SSH_BANNER` | `SSH-2.0-OpenSSH_for_Windows_8.1` | SSH identification string |
+| `HONEYPOT_SSH_HOST_KEY` | _(empty)_ | Path to persist the host key (stable fingerprint); empty = ephemeral |
+| `HONEYPOT_SSH_SHELL` | `true` | Accept login + serve fake cmd.exe to capture commands (false = creds only) |
+| `HONEYPOT_TELNET_SHELL` | `true` | Same fake shell for Telnet |
+| `HONEYPOT_FTP_FS` | `true` | Accept login + fake filesystem; capture uploads (false = creds only) |
+| `HONEYPOT_LDAP_BASE_DN` | _from AD domain_ | rootDSE base, e.g. `DC=contoso,DC=local` |
 | `HONEYPOT_RDP_CERT_ORG` | `contoso.local` | Org name in the self-signed cert |
 | `HONEYPOT_RDP_CERT_CN` | _host FQDN_ | Certificate CN (e.g. `win-dc01.contoso.local`) |
 | `HONEYPOT_LDAP_BIND_RESULT` | `invalid` | Bind reply: `invalid` (49) or `success` (0) |
@@ -213,6 +296,15 @@ settings:
 | `HONEYPOT_HTTP_SERVER` | `Microsoft-IIS/10.0` | `Server:` response header |
 | `HONEYPOT_HTTP_POWERED_BY` | `ASP.NET` | `X-Powered-By:` header (empty omits it) |
 | `HONEYPOT_HTTP_REALM` | `Restricted` | Basic-auth realm in 401 responses |
+| `HONEYPOT_POSTGRES_*` | `0.0.0.0:5432` | PostgreSQL pot bind address |
+| `HONEYPOT_VNC_*` | `0.0.0.0:5900` | VNC pot bind address |
+| `HONEYPOT_WINRM_*` | `0.0.0.0:5985` | WinRM pot bind address (NTLM persona from FQDN) |
+| `HONEYPOT_ELASTICSEARCH_*` | `0.0.0.0:9200` | Elasticsearch pot bind address |
+| `HONEYPOT_ELASTICSEARCH_VERSION` | `7.17.9` | Advertised ES version |
+| `HONEYPOT_ELASTICSEARCH_CLUSTER` | `elasticsearch` | Advertised cluster name |
+| `HONEYPOT_ELASTICSEARCH_NODE` | _persona hostname_ | Advertised node name |
+| `HONEYPOT_MONGODB_*` | `0.0.0.0:27017` | MongoDB pot bind address |
+| `HONEYPOT_MONGODB_VERSION` | `6.0.4` | Advertised MongoDB version |
 
 </details>
 
@@ -228,10 +320,19 @@ settings:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HONEYPOT_LOG_DIR` | `./logs` | Log output directory |
-| `HONEYPOT_LOG_CONSOLE` | `true` | Also print events to stdout |
+| `HONEYPOT_LOG_CONSOLE` | `true` | Also print events to stdout (disable in production) |
+| `HONEYPOT_LOG_COMBINED` | `true` | Also write the merged `events.log` (false halves disk use) |
 | `HONEYPOT_LOG_LEVEL` | `info` | `info` or `debug` |
-| `HONEYPOT_REDACT_IPS` | _(empty)_ | Extra addresses to scrub (local interface IPs are auto-detected and always scrubbed) |
+| `HONEYPOT_MAX_CONNS_PER_IP` | `10` | Max concurrent connections per source IP (0 disables) |
+| `HONEYPOT_MAX_CONN_SECONDS` | `120` | Absolute per-connection lifetime, anti-slowloris (0 disables) |
+| `HONEYPOT_LOG_MAX_MB` | `100` | Rotate each log past this size (0 disables) |
+| `HONEYPOT_LOG_MAX_BACKUPS` | `5` | Rotated files to keep per log |
+| `HONEYPOT_REDACT_IPS` | _(empty)_ | Extra addresses to scrub (interface + bind IPs are auto-scrubbed) |
 | `HONEYPOT_REDACT_WITH` | _persona FQDN_ | Replacement string for a redacted address |
+| `HONEYPOT_ALERT_WEBHOOK_URL` | _(empty)_ | POST high-value captures here (Discord/Slack/generic) |
+| `HONEYPOT_ALERT_SYSLOG` | _(empty)_ | `host:port` (UDP) or `tcp://host:port` |
+| `HONEYPOT_METRICS_ENABLED` | `false` | Serve the Prometheus `/metrics` endpoint |
+| `HONEYPOT_METRICS_LISTEN` | `127.0.0.1:9100` | Metrics admin bind address |
 
 </details>
 
@@ -293,13 +394,19 @@ internal/config/       .env loader + typed configuration
 internal/logging/      unified event + operational logger
 internal/honeypot/     Honeypot interface + Manager (supervision/shutdown)
 internal/ber/          shared ASN.1/BER helpers (used by ldap, snmp, kerberos)
+internal/ntlm/         shared NTLM challenge/response (used by rdp, smb)
 internal/timing/       randomized response-delay windows
 internal/ratelimit/    per-IP token bucket (UDP anti-amplification RRL)
+internal/netx/         connection guard rails (TTL, per-IP cap, deadline, recover)
+internal/shell/        safe fake cmd.exe emulator (used by ssh, telnet)
+internal/alert/        real-time webhook/syslog notifier
+internal/metrics/      Prometheus counters + /metrics endpoint
 internal/testutil/     test helpers (free port, wait-for-listener)
 internal/pots/
-    dns/  kerberos/  rdp/  smb/     one self-contained package per protocol
-    ldap/  netbios/  ftp/  telnet/
-    snmp/  mysql/  mssql/  redis/  http/
+    ssh/  dns/  kerberos/  rdp/      one self-contained package per protocol
+    smb/  ldap/  netbios/  ftp/
+    telnet/  snmp/  mysql/  mssql/  redis/  http/
+    postgres/  vnc/  winrm/  elasticsearch/  mongodb/
 ```
 
 ## ➕ Adding a new honeypot
